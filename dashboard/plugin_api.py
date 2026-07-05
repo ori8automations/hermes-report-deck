@@ -14,6 +14,7 @@ itself discovered under the configured report root.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -31,6 +32,7 @@ router = APIRouter()
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 _DEFAULT_ROOT = str(_HERMES_HOME / "reports")
 REPORT_ROOT = Path(os.environ.get("REPORT_DECK_ROOT", _DEFAULT_ROOT)).resolve()
+INDEX_PATH = REPORT_ROOT / "index.json"
 
 _MD_SUFFIXES = {".md", ".markdown"}
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -156,6 +158,82 @@ def _iter_report_files() -> List[Path]:
     return sorted(files, key=lambda x: x.as_posix())
 
 
+def _safe_index_content_path(raw: Any) -> Optional[Path]:
+    """Resolve an index.json content_path and keep it inside REPORT_ROOT."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    decoded = unquote(raw.strip())
+    p = Path(decoded)
+    if p.is_absolute() or "\x00" in decoded or any(part == ".." for part in p.parts):
+        return None
+    resolved = (REPORT_ROOT / p).resolve()
+    try:
+        resolved.relative_to(REPORT_ROOT)
+    except ValueError:
+        return None
+    if resolved.suffix.lower() not in _MD_SUFFIXES or not resolved.is_file():
+        return None
+    return resolved
+
+
+def _load_index_records() -> Optional[List[Dict[str, Any]]]:
+    """Load optional index.json metadata while preserving Markdown fallback.
+
+    If a report root contains ``index.json`` in the common shape
+    ``{"reports": [{id,title,generated_at,source,lane,tags,summary,content_path}]}``,
+    prefer it over blind Markdown discovery. This keeps stable ids and metadata
+    for generated report shelves. Roots without an index still use recursive
+    Markdown discovery.
+    """
+    if not INDEX_PATH.is_file():
+        return None
+    try:
+        data = json.loads(INDEX_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    reports = data.get("reports") if isinstance(data, dict) else None
+    if not isinstance(reports, list):
+        return None
+
+    records: List[Dict[str, Any]] = []
+    seen_ids: Dict[str, int] = {}
+    for item in reports:
+        if not isinstance(item, dict):
+            continue
+        path = _safe_index_content_path(item.get("content_path"))
+        if path is None:
+            continue
+        rid = item.get("id")
+        if not (isinstance(rid, str) and _ID_RE.match(rid)):
+            rid = _slug_id(path.relative_to(REPORT_ROOT).as_posix())
+        if rid in seen_ids:
+            seen_ids[rid] += 1
+            rid = f"{rid}-{seen_ids[rid]}"
+        else:
+            seen_ids[rid] = 1
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        _meta, body = _split_frontmatter(text)
+        records.append(
+            {
+                "id": rid,
+                "title": str(item.get("title") or _first_heading(body) or path.stem),
+                "generated_at": str(item.get("generated_at") or item.get("date") or ""),
+                "source": str(item.get("source") or ""),
+                "lane": str(item.get("lane") or ""),
+                "tags": _tags_of(item),
+                "summary": str(item.get("summary") or ""),
+                "related": _related_of(item),
+                "_path": path,
+                "_body": body,
+                "_rel": path.relative_to(REPORT_ROOT).as_posix(),
+            }
+        )
+    return records
+
+
 def _tags_of(meta: Dict[str, Any]) -> List[str]:
     value = meta.get("tags")
     if isinstance(value, list):
@@ -173,6 +251,10 @@ def _related_of(meta: Dict[str, Any]) -> List[str]:
 
 
 def _build_records() -> List[Dict[str, Any]]:
+    indexed = _load_index_records()
+    if indexed is not None:
+        return indexed
+
     records: List[Dict[str, Any]] = []
     seen_ids: Dict[str, int] = {}
     for path in _iter_report_files():

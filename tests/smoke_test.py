@@ -107,6 +107,29 @@ def main() -> int:
     ok(mini["related"] == ["one", "two"], "mini-yaml: block list")
     ok(mini["summary"] == "q", "mini-yaml: quoted scalar")
 
+    # --- optional index.json compatibility mode ---
+    index_root = pathlib.Path(tempfile.mkdtemp(prefix="report-deck-index-"))
+    (index_root / "nested").mkdir()
+    (index_root / "nested" / "indexed.md").write_text("# Indexed body\nhello\n", encoding="utf-8")
+    (index_root / "unindexed.md").write_text("# Should not appear when index exists\n", encoding="utf-8")
+    (index_root / "index.json").write_text(
+        '{"reports":[{"id":"stable-id","title":"Stable title","generated_at":"2026-07-05T00:00:00Z",'
+        '"source":"indexer","lane":"ops","tags":["indexed"],"summary":"from index",'
+        '"content_path":"nested/indexed.md"}]}',
+        encoding="utf-8",
+    )
+    os.environ["REPORT_DECK_ROOT"] = str(index_root)
+    importlib.reload(plugin_api)
+    app2 = FastAPI()
+    app2.include_router(plugin_api.router, prefix="/api/plugins/hermes-report-deck")
+    c2 = TestClient(app2)
+    listing2 = c2.get(B + "/reports").json()
+    ok(listing2["count"] == 1, "index: uses indexed reports only")
+    ok(listing2["reports"][0]["id"] == "stable-id", "index: preserves stable id")
+    ok(listing2["facets"]["lanes"] == ["ops"], "index: metadata facets")
+    detail2 = c2.get(B + "/reports/stable-id").json()
+    ok("Indexed body" in detail2["markdown"], "index: reads indexed markdown body")
+
     print(f"\nALL {PASSED} SMOKE TESTS PASSED")
     return 0
 

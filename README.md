@@ -16,7 +16,7 @@ report files on disk → Report Deck tab → filter + read
 
 **Automation readouts should stay read-only.** A report browser should not become another write surface, ticketing tool, or agent dispatch panel. Report Deck lists and renders local Markdown reports only. It does not edit, delete, post, trigger agents, or call external services.
 
-**Frontmatter should be useful, not mandatory.** Reports with YAML frontmatter get title, date, source, lane, tags, summary, and related metadata. Plain Markdown files still show up, with the title inferred from the first heading or filename.
+**Frontmatter should be useful, not mandatory.** Reports with YAML frontmatter get title, date, source, lane, tags, summary, and related metadata. Plain Markdown files still show up, with the title inferred from the first heading or filename. If a report root already has an `index.json`, Report Deck uses that metadata and stable ids first.
 
 The scope is deliberately narrow: browse reports, filter reports, read reports. That is enough to turn “the agent wrote a file somewhere” into something you can actually use from Mission Control.
 
@@ -64,7 +64,7 @@ The plugin resolves every discovered file and skips anything outside the configu
 
 ## Report format
 
-A report is any `.md` or `.markdown` file under `REPORT_DECK_ROOT`. YAML frontmatter is optional:
+A report is any `.md` or `.markdown` file under `REPORT_DECK_ROOT`. If the root contains an `index.json` with a top-level `reports` list, Report Deck uses that index for stable ids and metadata, and reads each report from its `content_path`. Without an index, it discovers Markdown files recursively and reads optional YAML frontmatter:
 
 ```markdown
 ---
@@ -103,7 +103,7 @@ Supported inline Markdown: headings, lists, `code`, fenced code blocks, `**bold*
 
 | Area | What it does |
 |---|---|
-| Report list | Shows every Markdown report under the configured root |
+| Report list | Shows indexed reports, or every Markdown report under the configured root if no index exists |
 | Metadata | Parses optional YAML frontmatter with PyYAML or a small fallback parser |
 | Filters | Filter by lane, source, tag, and date prefix |
 | Reader | Opens a report body with safe lightweight Markdown rendering |
