@@ -113,14 +113,15 @@
 .hrd-markdown a { color: var(--hrd-accent); }
 .hrd-unsafe-link { color: var(--hrd-danger); text-decoration: line-through; }
 .hrd-markdown code {
-  border: 1px solid var(--hrd-border); border-radius: 6px; background: var(--hrd-panel-2);
-  padding: .05rem .3rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em;
+  border: 1px solid var(--hrd-border); border-radius: 6px; background: var(--hrd-bg);
+  color: var(--hrd-text); padding: .05rem .3rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em;
 }
 .hrd-markdown pre {
   overflow: auto; border: 1px solid var(--hrd-border); border-radius: 10px;
-  background: var(--hrd-bg); padding: .85rem; margin: .7rem 0;
+  background: var(--hrd-bg); color: var(--hrd-text); padding: .85rem; margin: .7rem 0;
 }
-.hrd-markdown pre code { border: 0; background: transparent; padding: 0; }
+.hrd-markdown pre code { border: 0; background: transparent; color: inherit; padding: 0; }
 
 @media (max-width: 900px) {
   .hrd-grid { grid-template-columns: 1fr; }
