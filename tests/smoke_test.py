@@ -2,7 +2,7 @@
 """Self-contained smoke test for the Hermes Report Deck backend.
 
 Runs the FastAPI router against the bundled sample-reports/ directory and
-asserts the read-only API behaves and stays inside the report root.
+asserts report reads stay inside the root and folder config stays constrained.
 
 Usage:
     pip install fastapi httpx   # PyYAML optional
@@ -10,6 +10,7 @@ Usage:
 """
 
 import importlib
+import json
 import os
 import pathlib
 import sys
@@ -38,6 +39,8 @@ def main() -> int:
     secret.write_text("# SECRET\nshould never be served\n", encoding="utf-8")
 
     os.environ["REPORT_DECK_ROOT"] = str(SAMPLES)
+    # Isolate folder-visibility config to a throwaway file.
+    os.environ["REPORT_DECK_CONFIG"] = str(pathlib.Path(tempfile.mkdtemp(prefix="report-deck-cfg-")) / "cfg.json")
     sys.path.insert(0, str(DASHBOARD))
 
     import plugin_api  # noqa: E402
@@ -81,7 +84,7 @@ def main() -> int:
     ok(c.get(B + "/reports?lane=automation").json()["count"] == 1, "filter: lane")
     ok(c.get(B + "/reports?source=ci").json()["count"] == 1, "filter: source")
     ok(c.get(B + "/reports?tag=weekly").json()["count"] == 1, "filter: tag")
-    ok(c.get(B + "/reports?date=2026-06").json()["count"] == 2, "filter: date prefix")
+    ok(c.get(B + "/reports?date=2026-06").json()["count"] == 3, "filter: date prefix")
     ok(c.get(B + "/reports?lane=nope").json()["count"] == 0, "filter: no match")
     ok(c.get(B + "/reports?lane=%40bad").status_code == 400, "filter: invalid value rejected")
     ok(c.get(B + "/reports?date=notadate").status_code == 400, "filter: invalid date rejected")
@@ -107,28 +110,53 @@ def main() -> int:
     ok(mini["related"] == ["one", "two"], "mini-yaml: block list")
     ok(mini["summary"] == "q", "mini-yaml: quoted scalar")
 
-    # --- optional index.json compatibility mode ---
-    index_root = pathlib.Path(tempfile.mkdtemp(prefix="report-deck-index-"))
-    (index_root / "nested").mkdir()
-    (index_root / "nested" / "indexed.md").write_text("# Indexed body\nhello\n", encoding="utf-8")
-    (index_root / "unindexed.md").write_text("# Should not appear when index exists\n", encoding="utf-8")
-    (index_root / "index.json").write_text(
-        '{"reports":[{"id":"stable-id","title":"Stable title","generated_at":"2026-07-05T00:00:00Z",'
-        '"source":"indexer","lane":"ops","tags":["indexed"],"summary":"from index",'
-        '"content_path":"nested/indexed.md"}]}',
-        encoding="utf-8",
-    )
-    os.environ["REPORT_DECK_ROOT"] = str(index_root)
+    # --- indexed root compatibility (stable generated report shelves) ---
+    indexed_root = pathlib.Path(tempfile.mkdtemp(prefix="report-deck-indexed-"))
+    (indexed_root / "reports").mkdir()
+    (indexed_root / "reports" / "stack.md").write_text("---\ntitle: Ignored frontmatter title\n---\n# Stack body\nIndexed body\n", encoding="utf-8")
+    (indexed_root / "README.md").write_text("# should not be listed when index exists\n", encoding="utf-8")
+    (indexed_root / "index.json").write_text(json.dumps({"reports": [
+        {"id": "stable-stack-watch", "title": "Stable Stack Watch", "generated_at": "2026-07-06T00:00:00Z", "source": "lorekeeper", "lane": "ori8-internal", "tags": ["stack-watch"], "summary": "Indexed summary", "related": ["next"], "content_path": "reports/stack.md"},
+        {"id": "bad-escape", "title": "Bad", "content_path": "../escape.md"},
+        {"id": "bad-abs", "title": "Bad", "content_path": "/tmp/escape.md"}
+    ]}), encoding="utf-8")
+    os.environ["REPORT_DECK_ROOT"] = str(indexed_root)
+    os.environ["REPORT_DECK_CONFIG"] = str(pathlib.Path(tempfile.mkdtemp(prefix="report-deck-cfg-indexed-")) / "cfg.json")
     importlib.reload(plugin_api)
-    app2 = FastAPI()
-    app2.include_router(plugin_api.router, prefix="/api/plugins/hermes-report-deck")
-    c2 = TestClient(app2)
-    listing2 = c2.get(B + "/reports").json()
-    ok(listing2["count"] == 1, "index: uses indexed reports only")
-    ok(listing2["reports"][0]["id"] == "stable-id", "index: preserves stable id")
-    ok(listing2["facets"]["lanes"] == ["ops"], "index: metadata facets")
-    detail2 = c2.get(B + "/reports/stable-id").json()
-    ok("Indexed body" in detail2["markdown"], "index: reads indexed markdown body")
+    app_idx = FastAPI(); app_idx.include_router(plugin_api.router, prefix="/api/plugins/hermes-report-deck")
+    ci = TestClient(app_idx)
+    indexed = ci.get(B + "/reports").json()
+    ok(indexed["count"] == 1 and indexed["reports"][0]["id"] == "stable-stack-watch", "index: stable id preserved and non-index markdown skipped")
+    ok(indexed["facets"]["lanes"] == ["ori8-internal"] and indexed["facets"]["sources"] == ["lorekeeper"], "index: metadata facets preserved")
+    ok("Indexed body" in ci.get(B + "/reports/stable-stack-watch").json()["markdown"], "index: detail body readable")
+
+    # Restore sample root for folder visibility checks.
+    os.environ["REPORT_DECK_ROOT"] = str(SAMPLES)
+    os.environ["REPORT_DECK_CONFIG"] = str(pathlib.Path(tempfile.mkdtemp(prefix="report-deck-cfg-")) / "cfg.json")
+    importlib.reload(plugin_api)
+    app = FastAPI(); app.include_router(plugin_api.router, prefix="/api/plugins/hermes-report-deck")
+    c = TestClient(app)
+
+    # --- folder visibility management ---
+    fl = c.get(B + "/folders").json()
+    names = [f["name"] for f in fl["folders"]]
+    ok("" in names and "ops" in names, "folders: root + ops discovered")
+    ok(fl["mode"] == "all" and all(f["visible"] for f in fl["folders"]), "folders: default all visible")
+    total = c.get(B + "/reports").json()["count"]
+    # show only the ops folder
+    r = c.put(B + "/folders", json={"mode": "selected", "folders": ["ops"]}).json()
+    ok(r["mode"] == "selected", "folders: switched to selected")
+    only_ops = c.get(B + "/reports").json()
+    ok(only_ops["count"] == 1 and only_ops["reports"][0]["lane"] == "ops", "folders: only ops reports shown")
+    ok(c.get(B + "/health").json()["count"] == 1, "folders: health count reflects visibility")
+    # hidden report is not openable
+    ok(c.get(B + "/reports/nightly-crawl-2026-06-01").status_code == 404, "folders: hidden report 404")
+    # traversal / bad folder names are dropped
+    c.put(B + "/folders", json={"mode": "selected", "folders": ["../etc", "ops"]})
+    ok("../etc" not in c.get(B + "/folders").json()["visible_folders"], "folders: traversal name rejected")
+    # back to all
+    c.put(B + "/folders", json={"mode": "all", "folders": []})
+    ok(c.get(B + "/reports").json()["count"] == total, "folders: all restores full list")
 
     print(f"\nALL {PASSED} SMOKE TESTS PASSED")
     return 0

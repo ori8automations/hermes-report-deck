@@ -1,16 +1,21 @@
-"""Hermes Report Deck — read-only Markdown report browser (backend).
+"""Hermes Report Deck — Markdown report browser (backend).
 
 Mounted by the Hermes Dashboard at /api/plugins/hermes-report-deck/ when
 installed. It reads Markdown reports (with optional YAML frontmatter) from a
-single allow-listed report root and exposes read-only routes:
+single allow-listed report root and exposes report-read routes plus a small
+folder-visibility configuration route:
 
 - GET /health
-- GET /reports            (list metadata, with facets + filters)
-- GET /reports/{report_id}  (one report's metadata + Markdown body)
+- GET /folders             (list top-level folders + visibility state)
+- PUT /folders             (save folder visibility config outside report root)
+- GET /reports             (list metadata, with facets + filters)
+- GET /reports/{report_id} (one report's metadata + Markdown body)
 
-There are intentionally no write/delete/edit routes, no external network calls,
-and no arbitrary file access: the backend only ever reads Markdown files it has
-itself discovered under the configured report root.
+There are intentionally no report write/delete/edit routes, no external network
+calls, and no arbitrary file access: the backend only ever reads Markdown files
+it has itself discovered under the configured report root. The only write is a
+small JSON folder-visibility preference at REPORT_DECK_CONFIG, outside the
+report root.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel, Field
 
 router = APIRouter()
 
@@ -33,6 +39,10 @@ _HERMES_HOME = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
 _DEFAULT_ROOT = str(_HERMES_HOME / "reports")
 REPORT_ROOT = Path(os.environ.get("REPORT_DECK_ROOT", _DEFAULT_ROOT)).resolve()
 INDEX_PATH = REPORT_ROOT / "index.json"
+
+# Folder-visibility config. Stored OUTSIDE the report root (which stays
+# read-only) — default under $HERMES_HOME; override with REPORT_DECK_CONFIG.
+CONFIG_PATH = Path(os.environ.get("REPORT_DECK_CONFIG", str(_HERMES_HOME / "report-deck.json")))
 
 _MD_SUFFIXES = {".md", ".markdown"}
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
@@ -177,13 +187,11 @@ def _safe_index_content_path(raw: Any) -> Optional[Path]:
 
 
 def _load_index_records() -> Optional[List[Dict[str, Any]]]:
-    """Load optional index.json metadata while preserving Markdown fallback.
+    """Prefer optional index.json metadata when present.
 
-    If a report root contains ``index.json`` in the common shape
-    ``{"reports": [{id,title,generated_at,source,lane,tags,summary,content_path}]}``,
-    prefer it over blind Markdown discovery. This keeps stable ids and metadata
-    for generated report shelves. Roots without an index still use recursive
-    Markdown discovery.
+    This preserves stable IDs, timestamps, source/lane/tag facets, summaries,
+    related IDs, and explicit content_path values for generated report shelves.
+    Roots without a valid index fall back to recursive Markdown discovery.
     """
     if not INDEX_PATH.is_file():
         return None
@@ -216,21 +224,19 @@ def _load_index_records() -> Optional[List[Dict[str, Any]]]:
         except OSError:
             continue
         _meta, body = _split_frontmatter(text)
-        records.append(
-            {
-                "id": rid,
-                "title": str(item.get("title") or _first_heading(body) or path.stem),
-                "generated_at": str(item.get("generated_at") or item.get("date") or ""),
-                "source": str(item.get("source") or ""),
-                "lane": str(item.get("lane") or ""),
-                "tags": _tags_of(item),
-                "summary": str(item.get("summary") or ""),
-                "related": _related_of(item),
-                "_path": path,
-                "_body": body,
-                "_rel": path.relative_to(REPORT_ROOT).as_posix(),
-            }
-        )
+        records.append({
+            "id": rid,
+            "title": str(item.get("title") or _first_heading(body) or path.stem),
+            "generated_at": str(item.get("generated_at") or item.get("date") or ""),
+            "source": str(item.get("source") or ""),
+            "lane": str(item.get("lane") or ""),
+            "tags": _tags_of(item),
+            "summary": str(item.get("summary") or ""),
+            "related": _related_of(item),
+            "_path": path,
+            "_body": body,
+            "_rel": path.relative_to(REPORT_ROOT).as_posix(),
+        })
     return records
 
 
@@ -340,6 +346,55 @@ def _matches(record: Dict[str, Any], lane, source, tag, date) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Folder visibility config
+# --------------------------------------------------------------------------- #
+
+
+def _load_cfg() -> Dict[str, Any]:
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError, OSError):
+        data = {}
+    mode = data.get("folders_mode")
+    folders = data.get("visible_folders")
+    clean: List[str] = []
+    if isinstance(folders, list):
+        for f in folders:
+            s = str(f).strip()
+            if "/" in s or "\\" in s or ".." in s or len(s) > 120:
+                continue
+            if s not in clean:
+                clean.append(s)
+    return {
+        "folders_mode": mode if mode in ("all", "selected") else "all",
+        "visible_folders": clean,
+    }
+
+
+def _save_cfg(cfg: Dict[str, Any]) -> None:
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONFIG_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    tmp.replace(CONFIG_PATH)
+
+
+def _top_folder(rel: str) -> str:
+    """Top-level folder of a report's relative path ("" = report root)."""
+    return rel.split("/", 1)[0] if "/" in rel else ""
+
+
+def _folder_visible(cfg: Dict[str, Any], top: str) -> bool:
+    if cfg["folders_mode"] == "all":
+        return True
+    return top in set(cfg["visible_folders"])
+
+
+def _visible_records(cfg: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    cfg = cfg or _load_cfg()
+    return [r for r in _build_records() if _folder_visible(cfg, _top_folder(r["_rel"]))]
+
+
+# --------------------------------------------------------------------------- #
 # Routes
 # --------------------------------------------------------------------------- #
 
@@ -347,12 +402,59 @@ def _matches(record: Dict[str, Any], lane, source, tag, date) -> bool:
 @router.get("/health")
 def health() -> Dict[str, Any]:
     exists = REPORT_ROOT.is_dir()
+    cfg = _load_cfg()
     return {
         "ok": True,
         "report_root": str(REPORT_ROOT),
         "exists": exists,
-        "count": len(_iter_report_files()) if exists else 0,
+        "count": len(_visible_records(cfg)) if exists else 0,
+        "folders_mode": cfg["folders_mode"],
     }
+
+
+class FoldersIn(BaseModel):
+    mode: str = "all"
+    folders: List[str] = Field(default_factory=list)
+
+
+def _folders_state() -> Dict[str, Any]:
+    cfg = _load_cfg()
+    counts: Dict[str, int] = {}
+    for r in _build_records():
+        top = _top_folder(r["_rel"])
+        counts[top] = counts.get(top, 0) + 1
+    folders = [
+        {"name": name, "label": name or "(root)", "count": counts[name], "visible": _folder_visible(cfg, name)}
+        for name in sorted(counts.keys())
+    ]
+    return {
+        "schema_version": 1,
+        "mode": cfg["folders_mode"],
+        "visible_folders": cfg["visible_folders"],
+        "folders": folders,
+    }
+
+
+@router.get("/folders")
+def list_folders() -> Dict[str, Any]:
+    """List top-level folders under the report root and which are visible."""
+    return _folders_state()
+
+
+@router.put("/folders")
+def set_folders(body: FoldersIn) -> Dict[str, Any]:
+    """Configure which top-level folders show up (mode 'all' or 'selected')."""
+    if body.mode not in ("all", "selected"):
+        raise _bad_request("mode must be 'all' or 'selected'")
+    clean: List[str] = []
+    for f in body.folders:
+        s = str(f).strip()
+        if "/" in s or "\\" in s or ".." in s or len(s) > 120:
+            continue  # single path segments only ("" = report root)
+        if s not in clean:
+            clean.append(s)
+    _save_cfg({"folders_mode": body.mode, "visible_folders": clean})
+    return _folders_state()
 
 
 @router.get("/reports")
@@ -368,7 +470,7 @@ def list_reports(
     tag_f = _clean_filter(tag, "tag")
     date_f = _clean_date(date)
 
-    records = _build_records()
+    records = _visible_records()
     facets = {
         "lanes": sorted({r["lane"] for r in records if r["lane"]}),
         "sources": sorted({r["source"] for r in records if r["source"]}),
@@ -397,7 +499,7 @@ def get_report(report_id: str) -> Dict[str, Any]:
     if not _ID_RE.match(decoded) or "/" in decoded or "\\" in decoded or ".." in decoded:
         raise _not_found()
 
-    for record in _build_records():
+    for record in _visible_records():
         if record["id"] == decoded:
             return {
                 "schema_version": 1,
