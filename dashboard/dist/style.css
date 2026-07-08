@@ -106,28 +106,41 @@
 }
 
 /* Markdown */
-.hrd-markdown { line-height: 1.65; word-wrap: break-word; }
+.hrd-markdown { line-height: 1.65; word-wrap: break-word; overflow-wrap: anywhere; }
 .hrd-markdown h1, .hrd-markdown h2, .hrd-markdown h3 { margin: 1.1rem 0 .5rem; line-height: 1.3; }
 .hrd-markdown p { margin: .7rem 0; }
 .hrd-markdown ul { padding-left: 1.4rem; margin: .5rem 0; }
 .hrd-markdown a { color: var(--hrd-accent); }
 .hrd-unsafe-link { color: var(--hrd-danger); text-decoration: line-through; }
-.hrd-markdown code {
-  border: 1px solid var(--hrd-border); border-radius: 6px; background: var(--hrd-bg);
-  color: var(--hrd-text); padding: .05rem .3rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em;
+.hrd-root .hrd-markdown :not(pre) > code,
+.hrd-root .hrd-markdown p code,
+.hrd-root .hrd-markdown li code {
+  display: inline;
+  border: 1px solid #526071 !important;
+  border-radius: 6px;
+  background: #253041 !important;
+  color: #f8fafc !important;
+  padding: .08rem .34rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .88em;
+  line-height: 1.45;
+  white-space: break-spaces;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 .hrd-markdown pre {
   overflow: auto; border: 1px solid var(--hrd-border); border-radius: 10px;
-  background: var(--hrd-bg); color: var(--hrd-text); padding: .85rem; margin: .7rem 0;
+  background: var(--hrd-bg); padding: .85rem; margin: .7rem 0;
 }
-.hrd-markdown pre code { border: 0; background: transparent; color: inherit; padding: 0; }
+.hrd-markdown pre code { border: 0; background: transparent; padding: 0; }
 
 @media (max-width: 900px) {
+  .hrd-root { padding: .75rem; gap: .75rem; }
   .hrd-grid { grid-template-columns: 1fr; }
   .hrd-header { flex-direction: column; }
+  .hrd-detail { padding: .9rem; min-width: 0; overflow-x: hidden; }
+  .hrd-markdown { font-size: .95rem; line-height: 1.6; }
 }
-
 
 /* Folder management panel */
 .hrd-header-actions { display: flex; gap: .6rem; flex-wrap: wrap; }

@@ -1,5 +1,5 @@
 name: hermes-report-deck
-version: "1.1.1"
+version: "1.1.2"
 description: Hermes Dashboard browser for Markdown reports with safe folder visibility controls.
 license: MIT
 manifest_version: 1
